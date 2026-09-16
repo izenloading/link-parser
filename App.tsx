@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Outbound, V2RayConfig } from './services/v2ray';
-import { 
+import { SingBoxOutbound, SingBoxConfig } from './services/singbox';
+import {
   ClipboardDocumentIcon, 
   ArrowPathIcon,
   ArrowDownTrayIcon,
@@ -9,7 +10,7 @@ import {
   AdjustmentsHorizontalIcon
 } from '@heroicons/react/24/outline';
 
-const REPO_PATH = "iroblivionspark/v2ray-link-parser"; // Change this if your repo name is different
+const REPO_PATH = "iroblivionspark/link-parser"; // Change this if your repo name is different
 
 const translations = {
   en: {
@@ -17,10 +18,17 @@ const translations = {
     version: "v1.0.0",
     pasteLabel: "Paste V2Ray Link",
     placeholder: "vmess://..., vless://..., trojan://...",
+    placeholderSingbox: "vmess://..., vless://..., trojan://..., hysteria2://..., tuic://...",
     supports: "Supports VMess, VLESS, Trojan, SS",
+    supportsSingbox: "Supports VMess, VLESS, Trojan, SS, Hysteria2, TUIC",
     convert: "Convert",
     outboundMode: "Outbound",
     configMode: "Config",
+    formatV2ray: "V2Ray",
+    formatSingbox: "sing-box",
+    kernelV2ray: "V2Ray",
+    kernelXray: "Xray",
+    xrayOnlyError: "This link uses {feature}, an Xray-only capability not supported by standard V2Ray-core. Switch the kernel to Xray to continue.",
     configDetails: "Configuration Details",
     protocol: "Protocol",
     tag: "Tag/Remark",
@@ -47,10 +55,17 @@ const translations = {
     version: "نسخه ۱.۰.۰",
     pasteLabel: "لینک کانفیگ را وارد کنید",
     placeholder: "vmess://..., vless://..., trojan://...",
+    placeholderSingbox: "vmess://..., vless://..., trojan://..., hysteria2://..., tuic://...",
     supports: "پشتیبانی از VMess, VLESS, Trojan, SS",
+    supportsSingbox: "پشتیبانی از VMess, VLESS, Trojan, SS, Hysteria2, TUIC",
     convert: "تبدیل",
     outboundMode: "اوت‌باند",
     configMode: "کانفیگ",
+    formatV2ray: "V2Ray",
+    formatSingbox: "sing-box",
+    kernelV2ray: "V2Ray",
+    kernelXray: "Xray",
+    xrayOnlyError: "این لینک از {feature} استفاده می‌کند که یک قابلیت اختصاصی Xray است و در V2Ray-core استاندارد پشتیبانی نمی‌شود. برای ادامه، هسته را به Xray تغییر دهید.",
     configDetails: "جزئیات پیکربندی",
     protocol: "پروتکل",
     tag: "نام / تگ",
@@ -82,6 +97,8 @@ function App() {
   const [lang, setLang] = useState<'en' | 'fa'>('en');
   const [starCount, setStarCount] = useState<number | null>(null);
   const [configMode, setConfigMode] = useState(false);
+  const [format, setFormat] = useState<'v2ray' | 'singbox'>('v2ray');
+  const [kernel, setKernel] = useState<'v2ray' | 'xray'>('xray');
 
   // Advanced Settings State
   const [dnsInput, setDnsInput] = useState("1.1.1.1,8.8.8.8");
@@ -115,12 +132,12 @@ function App() {
     if (inputText) {
       handleParse();
     }
-  }, [configMode, fragEnabled, fragPackets, fragLength, fragInterval, muxEnabled, muxConcurrency, muxXudp, dnsInput]);
+  }, [format, kernel, configMode, fragEnabled, fragPackets, fragLength, fragInterval, muxEnabled, muxConcurrency, muxXudp, dnsInput]);
 
   const handleParse = () => {
     setError(null);
     setJsonOutput('');
-    
+
     if (!inputText.trim()) {
       // Don't show error immediately on empty input unless user clicked convert
       if (parsedObj) setParsedObj(null);
@@ -130,17 +147,66 @@ function App() {
     try {
       const lines = inputText.trim().split('\n');
       const firstLink = lines[0].trim();
-      
+
+      if (format === 'singbox') {
+        const outbound = SingBoxOutbound.fromLink(firstLink);
+
+        if (outbound) {
+          setParsedObj({
+            protocol: outbound.type,
+            tag: outbound.tag,
+            network: outbound.transport?.type || 'tcp',
+            security: outbound.tls?.reality ? 'reality' : (outbound.tls?.enabled ? 'tls' : 'none'),
+          });
+
+          let finalOutput;
+          if (configMode) {
+            const options = {
+              dns: dnsInput,
+              multiplex: muxEnabled ? {
+                enabled: true,
+                protocol: 'smux',
+                maxConnections: muxConcurrency
+              } : undefined
+            };
+            finalOutput = SingBoxConfig.parse(firstLink, options);
+          } else {
+            finalOutput = { outbound };
+          }
+
+          setJsonOutput(JSON.stringify(finalOutput, null, 2));
+        } else {
+          setError(t.parseError);
+          setParsedObj(null);
+        }
+        return;
+      }
+
       const outbound = Outbound.fromLink(firstLink);
-      
+
       if (outbound) {
-        setParsedObj(outbound.toJson());
-        
+        if (kernel === 'v2ray') {
+          const xrayOnlyFeature = outbound.getXrayOnlyFeature();
+          if (xrayOnlyFeature) {
+            setError(t.xrayOnlyError.replace('{feature}', xrayOnlyFeature));
+            setParsedObj(null);
+            return;
+          }
+        }
+
+        const json = outbound.toJson();
+        setParsedObj({
+          protocol: json.protocol,
+          tag: json.tag,
+          network: json.streamSettings?.network || 'tcp',
+          security: json.streamSettings?.security || 'none',
+        });
+
         let finalOutput;
         if (configMode) {
           const options = {
             dns: dnsInput,
-            fragment: fragEnabled ? {
+            fragment: (kernel === 'xray' && fragEnabled) ? {
               enabled: true,
               packets: fragPackets,
               length: fragLength,
@@ -149,12 +215,12 @@ function App() {
             mux: muxEnabled ? {
               enabled: true,
               concurrency: muxConcurrency,
-              xudpConcurrency: muxXudp
+              xudpConcurrency: kernel === 'xray' ? muxXudp : undefined
             } : undefined
           };
           finalOutput = V2RayConfig.parse(firstLink, options);
         } else {
-          finalOutput = { outbound: outbound.toJson() };
+          finalOutput = { outbound: json };
         }
 
         setJsonOutput(JSON.stringify(finalOutput, null, 2));
@@ -275,14 +341,88 @@ function App() {
                 id="input"
                 rows={6}
                 className="w-full bg-slate-950 border border-slate-700 rounded-xl p-4 text-slate-300 placeholder-slate-600 focus:ring-2 focus:ring-emerald-500 focus:border-transparent outline-none transition-all font-mono text-sm resize-none"
-                placeholder={t.placeholder}
+                placeholder={format === 'singbox' ? t.placeholderSingbox : t.placeholder}
                 dir="ltr" // Links are always LTR
                 value={inputText}
                 onChange={(e) => setInputText(e.target.value)}
               />
-              
+
+              <div className="mt-4 flex flex-wrap items-center gap-3 justify-center sm:justify-start">
+                {/* Format Toggle: V2Ray (family) / sing-box */}
+                <div className="flex items-center gap-2.5 bg-slate-900/50 p-1.5 rounded-xl border border-slate-700/50">
+                    <span
+                        className={`text-xs font-medium cursor-pointer transition-colors select-none ${format === 'v2ray' ? 'text-white' : 'text-slate-500'}`}
+                        onClick={() => setFormat('v2ray')}
+                    >
+                        {t.formatV2ray}
+                    </span>
+                    <button
+                        type="button"
+                        onClick={() => setFormat(format === 'v2ray' ? 'singbox' : 'v2ray')}
+                        className={`
+                            relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none
+                            ${format === 'singbox' ? 'bg-cyan-500' : 'bg-slate-600'}
+                        `}
+                        role="switch"
+                        aria-checked={format === 'singbox'}
+                        dir="ltr"
+                    >
+                        <span
+                            aria-hidden="true"
+                            className={`
+                                pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out
+                                ${format === 'singbox' ? 'translate-x-5' : 'translate-x-0'}
+                            `}
+                        />
+                    </button>
+                    <span
+                        className={`text-xs font-medium cursor-pointer transition-colors select-none ${format === 'singbox' ? 'text-white' : 'text-slate-500'}`}
+                        onClick={() => setFormat('singbox')}
+                    >
+                        {t.formatSingbox}
+                    </span>
+                </div>
+
+                {/* Kernel Toggle: V2Ray-core / Xray-core — only meaningful within the V2Ray link family */}
+                {format === 'v2ray' && (
+                <div className="flex items-center gap-2.5 bg-slate-900/50 p-1.5 rounded-xl border border-slate-700/50">
+                    <span
+                        className={`text-xs font-medium cursor-pointer transition-colors select-none ${kernel === 'v2ray' ? 'text-white' : 'text-slate-500'}`}
+                        onClick={() => setKernel('v2ray')}
+                    >
+                        {t.kernelV2ray}
+                    </span>
+                    <button
+                        type="button"
+                        onClick={() => setKernel(kernel === 'v2ray' ? 'xray' : 'v2ray')}
+                        className={`
+                            relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none
+                            ${kernel === 'xray' ? 'bg-violet-500' : 'bg-slate-600'}
+                        `}
+                        role="switch"
+                        aria-checked={kernel === 'xray'}
+                        dir="ltr"
+                    >
+                        <span
+                            aria-hidden="true"
+                            className={`
+                                pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out
+                                ${kernel === 'xray' ? 'translate-x-5' : 'translate-x-0'}
+                            `}
+                        />
+                    </button>
+                    <span
+                        className={`text-xs font-medium cursor-pointer transition-colors select-none ${kernel === 'xray' ? 'text-white' : 'text-slate-500'}`}
+                        onClick={() => setKernel('xray')}
+                    >
+                        {t.kernelXray}
+                    </span>
+                </div>
+                )}
+              </div>
+
               <div className="mt-4 flex flex-col sm:flex-row items-center justify-between gap-4">
-                <span className="text-xs text-slate-500 text-center sm:text-left rtl:sm:text-right hidden sm:block">{t.supports}</span>
+                <span className="text-xs text-slate-500 text-center sm:text-left rtl:sm:text-right hidden sm:block">{format === 'singbox' ? t.supportsSingbox : t.supports}</span>
                 <div className="flex items-center space-x-3 rtl:space-x-reverse w-full sm:w-auto">
                     {/* Toggle Switch */}
                     <div className="flex items-center gap-2.5 bg-slate-900/50 p-1.5 rounded-xl border border-slate-700/50">
@@ -351,8 +491,9 @@ function App() {
                     />
                 </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                    {/* Fragment */}
+                <div className={`grid grid-cols-1 ${(format === 'v2ray' && kernel === 'xray') ? 'md:grid-cols-2' : ''} gap-6`}>
+                    {/* Fragment - Xray only, neither V2Ray-core nor sing-box support it */}
+                    {format === 'v2ray' && kernel === 'xray' && (
                     <div className="bg-slate-900/40 p-4 rounded-lg border border-slate-700/30">
                          <div className="flex items-center justify-between mb-3">
                              <span className="text-sm font-medium text-slate-300">{t.fragment}</span>
@@ -378,8 +519,9 @@ function App() {
                             </div>
                          </div>
                     </div>
+                    )}
 
-                    {/* Mux */}
+                    {/* Mux / Multiplex */}
                     <div className="bg-slate-900/40 p-4 rounded-lg border border-slate-700/30">
                          <div className="flex items-center justify-between mb-3">
                              <span className="text-sm font-medium text-slate-300">{t.mux}</span>
@@ -394,10 +536,12 @@ function App() {
                                     <label className="block text-[10px] uppercase text-slate-500 mb-1">{t.concurrency}</label>
                                     <input type="number" value={muxConcurrency} onChange={(e) => setMuxConcurrency(Number(e.target.value))} className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1.5 text-xs text-slate-300" dir="ltr" />
                                 </div>
+                                {format === 'v2ray' && kernel === 'xray' && (
                                 <div>
                                     <label className="block text-[10px] uppercase text-slate-500 mb-1">{t.xudp}</label>
                                     <input type="number" value={muxXudp} onChange={(e) => setMuxXudp(Number(e.target.value))} className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1.5 text-xs text-slate-300" dir="ltr" />
                                 </div>
+                                )}
                             </div>
                          </div>
                     </div>
@@ -420,11 +564,11 @@ function App() {
                   </div>
                   <div className="p-3 bg-slate-900/50 rounded-lg">
                     <div className={`text-xs text-slate-500 ${isRTL ? 'text-right' : 'text-left'}`}>{t.network}</div>
-                    <div className={`text-sm font-medium text-cyan-400 uppercase ${isRTL ? 'text-right' : 'text-left'}`}>{parsedObj.streamSettings?.network || "TCP"}</div>
+                    <div className={`text-sm font-medium text-cyan-400 uppercase ${isRTL ? 'text-right' : 'text-left'}`}>{parsedObj.network || "TCP"}</div>
                   </div>
                    <div className="p-3 bg-slate-900/50 rounded-lg">
                     <div className={`text-xs text-slate-500 ${isRTL ? 'text-right' : 'text-left'}`}>{t.security}</div>
-                    <div className={`text-sm font-medium text-amber-400 uppercase ${isRTL ? 'text-right' : 'text-left'}`}>{parsedObj.streamSettings?.security || "None"}</div>
+                    <div className={`text-sm font-medium text-amber-400 uppercase ${isRTL ? 'text-right' : 'text-left'}`}>{parsedObj.security || "None"}</div>
                   </div>
                 </div>
               </div>

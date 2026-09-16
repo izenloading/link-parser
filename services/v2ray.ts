@@ -886,6 +886,16 @@ export class Outbound extends CommonClass {
         return [Protocols.VMess, Protocols.VLESS, Protocols.Trojan, Protocols.Shadowsocks].includes(this.protocol);
     }
 
+    // Returns the name of the Xray-only feature in use, or null when the
+    // outbound only relies on capabilities standard V2Ray-core also supports.
+    getXrayOnlyFeature(): string | null {
+        if (this.stream.security === 'reality') return 'REALITY';
+        if (this.stream.network === 'xhttp') return 'xHTTP';
+        const flow = (this.settings as any)?.flow;
+        if (flow && flow.startsWith('xtls')) return 'XTLS flow';
+        return null;
+    }
+
     static fromJson(json: any = {}) {
         return new Outbound(
             json.tag,
@@ -1117,13 +1127,17 @@ export class V2RayConfig {
         // Enforce Tag "Proxy"
         proxyOutbound.tag = "Proxy";
 
-        // Apply Mux settings if enabled
+        // Apply Mux settings if enabled. xudpConcurrency/xudpProxyUDP443 are
+        // Xray-only extensions to mux.cool, so only include them when the
+        // caller explicitly opts in (i.e. Xray kernel selected).
         if (options.mux?.enabled) {
             proxyOutbound.mux = {
                 enabled: true,
                 concurrency: Number(options.mux.concurrency) || 8,
-                xudpConcurrency: Number(options.mux.xudpConcurrency) || 16,
-                xudpProxyUDP443: "reject"
+                ...(options.mux.xudpConcurrency !== undefined ? {
+                    xudpConcurrency: Number(options.mux.xudpConcurrency) || 16,
+                    xudpProxyUDP443: "reject"
+                } : {})
             };
         }
 

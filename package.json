@@ -1,5 +1,5 @@
 {
-  "name": "v2ray-link-parser",
+  "name": "link-parser",
   "private": true,
   "version": "0.0.0",
   "type": "module",
